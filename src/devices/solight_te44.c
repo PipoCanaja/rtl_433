@@ -34,44 +34,28 @@
  * (at your option) any later version.
  */
 
-#include "data.h"
-#include "rtl_433.h"
-#include "util.h"
+#include "decoder.h"
 
-static int solight_te44_callback(bitbuffer_t *bitbuffer) {
+// NOTE: this should really not be here
+int rubicson_crc_check(bitrow_t *bb);
 
+static int solight_te44_callback(r_device *decoder, bitbuffer_t *bitbuffer)
+{
     data_t *data;
-    char time_str[LOCAL_TIME_BUFLEN];
-
     uint8_t id;
     uint8_t channel;
     int8_t multiplier;
     uint8_t temperature_raw;
     float temperature;
+    unsigned bits = bitbuffer->bits_per_row[0];
 
     bitrow_t *bb = bitbuffer->bb;
 
-    // simple payload structure check (as the checksum algorithm is still unclear)
-    if (bitbuffer->num_rows != 12) {
+    if (bits != 37)
         return 0;
-    }
 
-    for (int i = 0; i < 12; i++) {
-        int bits = i < 11 ? 37 : 36; // last line does not contain single 0 separator
-
-        // all lines should have correct length
-        if (bitbuffer->bits_per_row[i] != bits) {
-            return 0;
-        }
-
-        // all lines should have equal content
-        // will work also for the last, shorter line, as the separating bit is always 0 anyway
-        if (i > 0 && 0 != memcmp(bb[i], bb[i - 1], 5)) { // 5 bytes to compare 40 bits
-            return 0;
-        }
-    }
-
-    local_time_str(0, time_str);
+    if (!rubicson_crc_check(bb))
+        return 0;
 
     id = bb[0][0];
 
@@ -88,20 +72,19 @@ static int solight_te44_callback(bitbuffer_t *bitbuffer) {
 
     temperature = (float) (((256 * multiplier) + temperature_raw) / 10.0);
 
-    data = data_make("time", "", DATA_STRING, time_str,
-                     "model", "", DATA_STRING, "Solight TE44",
-                     "id", "Id", DATA_INT, id,
-                     "channel", "Channel", DATA_INT, channel + 1,
-                     "temperature_C", "Temperature", DATA_FORMAT, "%.02f C", DATA_DOUBLE, temperature,
-                     NULL);
-    data_acquired_handler(data);
+    data = data_make(
+            "model", "", DATA_STRING, "Solight TE44",
+            "id", "Id", DATA_INT, id,
+            "channel", "Channel", DATA_INT, channel + 1,
+            "temperature_C", "Temperature", DATA_FORMAT, "%.02f C", DATA_DOUBLE, temperature,
+            "mic",           "Integrity",   DATA_STRING, "CRC",
+            NULL);
+    decoder_output_data(decoder, data);
 
     return 1;
-
 }
 
 static char *output_fields[] = {
-    "time",
     "model",
     "id",
     "channel",
@@ -111,12 +94,12 @@ static char *output_fields[] = {
 
 r_device solight_te44 = {
     .name          = "Solight TE44",
-    .modulation    = OOK_PULSE_PPM_RAW,
-    .short_limit   = 1500, // short gap = 972 us
-    .long_limit    = 3000, // long gap = 1932 us
-    .reset_limit   = 6000, // packet gap = 3880 us
-    .json_callback = &solight_te44_callback,
+    .modulation    = OOK_PULSE_PPM,
+    .short_width   = 972, // short gap = 972 us
+    .long_width    = 1932, // long gap = 1932 us
+    .gap_limit     = 3000, // packet gap = 3880 us
+    .reset_limit   = 6000,
+    .decode_fn     = &solight_te44_callback,
     .disabled      = 0,
-    .demod_arg     = 0,
     .fields        = output_fields,
 };
